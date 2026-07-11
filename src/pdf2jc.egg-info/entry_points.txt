@@ -1,0 +1,2 @@
+[console_scripts]
+pdf2jc = pdf2jc.cli:main
