@@ -1,0 +1,60 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# IDE and editor settings
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# macOS and Windows
+.DS_Store
+Thumbs.db
+
+# Local inputs and generated pipeline artifacts
+input/
+output/
+debug/
+*.log
+*.tmp
+*.cache
+
+# Generated presentation and data artifacts
+*.pptx
+*.pptm
+~$*.pptx
+*.inspect.ndjson
+panel_boxes_auto.json
+figure_panels.json
+article_text.json
+citation_map.json
+manual_figures.json
+label_candidates.json
+label_scores.json
+panel_layout.json
+narrative_units.json
+evidence_units*.json
+slides*.json
+presentation*.json
+slide_plan.json
+validation_report.md
+
+# Local Codex metadata
+.codex/
