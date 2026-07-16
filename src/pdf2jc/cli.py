@@ -105,6 +105,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_presentation_arguments(diagnose_presentation_parser)
 
+    web_parser = subparsers.add_parser(
+        "web",
+        help="Start the local PDF2JC web interface.",
+    )
+    web_parser.add_argument("--host", default="127.0.0.1", help="Host to bind. Default: 127.0.0.1")
+    web_parser.add_argument("--port", default=8765, type=int, help="Port to bind. Default: 8765")
+    web_parser.add_argument(
+        "--jobs-dir",
+        default="output/web_jobs",
+        help="Folder for web-uploaded inputs and outputs. Default: output/web_jobs",
+    )
+    web_parser.add_argument(
+        "--theme",
+        default="theme.yaml",
+        help="Presentation theme YAML file. Default: theme.yaml",
+    )
+
     add_common_arguments(parser)
     return parser
 
@@ -118,7 +135,7 @@ def add_presentation_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--grouping-mode",
         default="sentence_grouped",
-        choices=["sentence_grouped", "paragraph_grouped"],
+        choices=["sentence_grouped", "paragraph_grouped", "reviewed"],
         help="Slide Object input mode. Default: sentence_grouped",
     )
     parser.add_argument(
@@ -158,6 +175,17 @@ def main() -> None:
 
     if args.command == "diagnose-presentation":
         diagnose_presentation(args, parser)
+        return
+
+    if args.command == "web":
+        from .web import serve
+
+        serve(
+            host=args.host,
+            port=args.port,
+            jobs_dir=Path(args.jobs_dir),
+            theme_path=Path(args.theme),
+        )
         return
 
     from .pipeline import run_pipeline

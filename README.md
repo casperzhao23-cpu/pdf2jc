@@ -19,6 +19,12 @@ The result is a reviewable intermediate record as well as an editable `.pptx` de
 Paper PDF
   |
   v
+PDF text extraction
+  |
+  v
+Manual figure upload
+  |
+  v
 Panel Detection
   |
   v
@@ -99,6 +105,26 @@ When running from a source checkout without installing the package, prefix comma
 ```bash
 PYTHONPATH=src python -m pdf2jc diagnose-panels --pdf input/paper.pdf --figures-dir input/figs --output-dir output
 ```
+
+## Local web interface
+
+PDF2JC also includes a local website that acts as a graphical entry point for
+the same pipeline. It does not extract figures from the PDF automatically and
+does not replace the Python processing stages; it uploads the paper and manually
+saved complete figures, runs the existing stages, then exposes panel debug
+images, citation QC, slide review, and the final editable PowerPoint.
+
+```bash
+pdf2jc web --host 127.0.0.1 --port 8765
+```
+
+When running from a source checkout without installing the package:
+
+```bash
+PYTHONPATH=src python -m pdf2jc web --host 127.0.0.1 --port 8765
+```
+
+Outputs from web runs are stored under `output/web_jobs/`.
 
 ## Example workflow
 
