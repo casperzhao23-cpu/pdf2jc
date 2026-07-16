@@ -89,6 +89,7 @@ class SlideObject(BaseModel):
     slide_type: SlideType
     section_id: str
     section_title: str
+    experiment_purpose: str
     slide_subtitle: str
     narrative_unit_id: str
     evidence_unit_id: str
@@ -445,7 +446,12 @@ def build_slides(
                 slide_type="result",
                 section_id=evidence.section_id,
                 section_title=narrative.section_title,
-                slide_subtitle=make_slide_subtitle(
+                experiment_purpose=make_experiment_purpose(
+                    narrative=narrative,
+                    biological_claim=evidence.biological_claim,
+                    experiment_type=evidence.experiment_type,
+                ),
+                slide_subtitle=make_experiment_purpose(
                     narrative=narrative,
                     biological_claim=evidence.biological_claim,
                     experiment_type=evidence.experiment_type,
@@ -621,16 +627,31 @@ def summarize_experiment_type(experiment_types: list[str]) -> str:
     return "; ".join(unique)
 
 
+def make_experiment_purpose(
+    narrative: NarrativeUnit,
+    biological_claim: str,
+    experiment_type: str,
+) -> str:
+    # This remains deliberately rule-based.  A purpose is a short orientation
+    # line on a slide, not an LLM-generated summary or a copied Results sentence.
+    if narrative.section_title and narrative.section_title != "Results":
+        return shorten(f"Investigate: {narrative.section_title}", 76)
+    target = biological_claim or narrative.inferred_topic or "the reported result"
+    if experiment_type != "result evidence":
+        return shorten(f"Assess {experiment_type}: {target}", 76)
+    return shorten(f"Test whether {target}", 76)
+
+
 def make_slide_subtitle(
     narrative: NarrativeUnit,
     biological_claim: str,
     experiment_type: str,
 ) -> str:
-    if narrative.inferred_topic and narrative.inferred_topic != "Results narrative":
-        return narrative.inferred_topic
-    if experiment_type != "result evidence":
-        return experiment_type.capitalize()
-    return shorten(biological_claim, 80)
+    return make_experiment_purpose(
+        narrative=narrative,
+        biological_claim=biological_claim,
+        experiment_type=experiment_type,
+    )
 
 
 def lowest_confidence(confidences: list[str]) -> str:
@@ -682,6 +703,7 @@ def write_slide_review_csv(path: Path, slides: list[SlideObject]) -> None:
         "slide_id",
         "section_title",
         "slide_subtitle",
+        "experiment_purpose",
         "paragraph_index",
         "paragraph_number_1based",
         "evidence_unit_id",
@@ -703,6 +725,7 @@ def write_slide_review_csv(path: Path, slides: list[SlideObject]) -> None:
                     "slide_id": slide.slide_id,
                     "section_title": slide.section_title,
                     "slide_subtitle": slide.slide_subtitle,
+                    "experiment_purpose": slide.experiment_purpose,
                     "paragraph_index": slide.paragraph_index,
                     "paragraph_number_1based": slide.paragraph_number_1based,
                     "evidence_unit_id": slide.evidence_unit_id,
@@ -808,7 +831,7 @@ def build_slide_card_html(slide: SlideObject, html_dir: Path) -> str:
     return (
         f'<article class="slide-card {review_class}">'
         f"<h4>{escape(slide.evidence_unit_id)} -> {escape(slide.slide_id)}: "
-        f"{escape(slide.slide_subtitle)}</h4>"
+        f"{escape(slide.experiment_purpose)}</h4>"
         f"<p><strong>Grouping reason:</strong> {escape(slide.grouping_reason)}</p>"
         f"<p><strong>Source citations:</strong> {escape(', '.join(slide.source_citation_ids))}</p>"
         f"<p><strong>Panel IDs:</strong> {escape(', '.join(slide.panel_ids))}</p>"

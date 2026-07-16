@@ -38,10 +38,13 @@ DEFAULT_THEME = {
 
 PAPER_SHORT_CITATION = "Eguchi et al., Science, 2026"
 PAPER_TITLE_SHORT = "Reversible suppression of autophagy reveals neuronal resilience"
-VALID_GROUPING_MODES = {"sentence_grouped", "paragraph_grouped"}
+VALID_GROUPING_MODES = {"sentence_grouped", "paragraph_grouped", "reviewed"}
 SKILL_DIR = Path(
     "/Users/casperzhao/.codex/plugins/cache/openai-primary-runtime/"
     "presentations/26.630.12135/skills/presentations"
+)
+PRESENTATION_SKILL_ROOT = Path(
+    "/Users/casperzhao/.codex/plugins/cache/openai-primary-runtime/presentations"
 )
 
 
@@ -65,7 +68,7 @@ def build_presentation(
 ) -> PresentationBuildResult:
     if grouping_mode not in VALID_GROUPING_MODES:
         raise ValueError(
-            "Unknown grouping mode. Use sentence_grouped or paragraph_grouped."
+            "Unknown grouping mode. Use sentence_grouped, paragraph_grouped, or reviewed."
         )
 
     slides_path = slide_objects_path(output_dir=output_dir, grouping_mode=grouping_mode)
@@ -127,6 +130,8 @@ def build_presentation(
 def slide_objects_path(output_dir: Path, grouping_mode: str) -> Path:
     if grouping_mode == "paragraph_grouped":
         return output_dir / "slides.paragraph_grouped.json"
+    if grouping_mode == "reviewed":
+        return output_dir / "slides.reviewed.json"
     return output_dir / "slides.json"
 
 
@@ -180,29 +185,35 @@ def build_presentation_object(
 ) -> dict:
     slides = []
     for index, slide_object in enumerate(slide_objects, start=1):
-        finding = make_visible_finding(slide_object)
-        experiment_question = make_experiment_question(slide_object)
+        display_modules = display_modules_for_slide(slide_object)
+        content_modules = make_visible_content_modules(slide_object, display_modules=display_modules)
+        experiment_purpose = make_experiment_purpose(slide_object, display_modules=display_modules)
         panel_layout = compute_panel_layout(len(slide_object.get("panel_ids", [])))
         slide_model = {
             "presentation_slide_number": index,
             "source_slide_id": slide_object["slide_id"],
             "slide_type": slide_object.get("slide_type", "result"),
             "section_id": slide_object["section_id"],
-            "section_title": slide_object["section_title"],
-            "experiment_question": experiment_question,
-            "finding": finding,
+            "section_title": shorten_visible_text(slide_object["section_title"], 82) if display_modules["section_title"] else "",
+            "experiment_purpose": experiment_purpose,
+            "experiment_question": experiment_purpose,
+            "content_modules": content_modules,
+            # A result slide always retains its mapped panel images.  The
+            # Composer controls explanatory modules, not whether evidence is
+            # present on the slide.
             "panel_ids": slide_object.get("panel_ids", []),
             "panel_image_paths": [
                 str(Path(image_path).resolve())
                 for image_path in slide_object.get("panel_image_paths", [])
             ],
             "paper_citation": PAPER_SHORT_CITATION,
-            "footer_title": PAPER_TITLE_SHORT,
-            "speaker_notes": make_speaker_notes(slide_object, finding, experiment_question),
+            "footer_title": PAPER_TITLE_SHORT if display_modules["footer"] else "",
+            "speaker_notes": make_speaker_notes(slide_object, content_modules, experiment_purpose) if display_modules["speaker_notes"] else "",
             "needs_manual_review": slide_object.get("needs_manual_review", False),
             "confidence": slide_object.get("confidence", "unknown"),
             "source_citation_ids": slide_object.get("source_citation_ids", []),
             "evidence_unit_id": slide_object.get("evidence_unit_id", ""),
+            "display_modules": display_modules,
             "layout": {
                 "layout_type": "result_evidence_redesigned",
                 "panel_layout": panel_layout,
@@ -233,6 +244,29 @@ def build_presentation_object(
     }
 
 
+def display_modules_for_slide(slide: dict) -> dict:
+    defaults = {
+        "section_title": True,
+        "experiment_purpose": True,
+        "panel_images": True,
+        "panel_labels": True,
+        "citation_sentences": False,
+        "biological_claim": True,
+        "experiment_type": False,
+        "speaker_notes": True,
+        "footer": True,
+    }
+    raw = slide.get("display_modules")
+    if isinstance(raw, dict):
+        if "subtitle" in raw and "experiment_purpose" not in raw:
+            defaults["experiment_purpose"] = bool(raw["subtitle"])
+        for key in defaults:
+            if key in raw:
+                defaults[key] = bool(raw[key])
+    defaults["panel_images"] = True
+    return defaults
+
+
 def compute_panel_layout(panel_count: int) -> dict:
     if panel_count <= 1:
         return {"rows": 1, "columns": 1, "name": "large_centered"}
@@ -249,7 +283,14 @@ def compute_panel_layout(panel_count: int) -> dict:
     return {"rows": rows, "columns": columns, "name": "adaptive_grid"}
 
 
-def make_experiment_question(slide: dict) -> str:
+def make_experiment_purpose(slide: dict, display_modules: dict | None = None) -> str:
+    display_modules = display_modules or display_modules_for_slide(slide)
+    if not display_modules["experiment_purpose"]:
+        return ""
+    if slide.get("grouping_strategy"):
+        return shorten_visible_text(slide.get("experiment_purpose") or slide.get("slide_subtitle", ""), 76)
+    if slide.get("experiment_purpose"):
+        return shorten_visible_text(slide["experiment_purpose"], 76)
     panel_ids = slide.get("panel_ids", [])
     panel_set = set(panel_ids)
     experiment_type = slide.get("experiment_type", "result evidence")
@@ -278,7 +319,38 @@ def make_experiment_question(slide: dict) -> str:
     return ""
 
 
-def make_visible_finding(slide: dict) -> dict:
+def make_experiment_question(slide: dict, display_modules: dict | None = None) -> str:
+    return make_experiment_purpose(slide=slide, display_modules=display_modules)
+
+
+def make_visible_content_modules(slide: dict, display_modules: dict | None = None) -> list[dict]:
+    """Return independent, vertically stackable explanatory slide modules."""
+    display_modules = display_modules or display_modules_for_slide(slide)
+    modules = []
+    if display_modules["citation_sentences"]:
+        sentences = slide.get("supporting_sentences", [])
+        if sentences:
+            modules.append({
+                "kind": "key_findings",
+                "heading": "Selected citation sentences",
+                "items": [shorten_visible_text(sentence, 120) for sentence in sentences[:2]],
+            })
+    if display_modules["biological_claim"]:
+        claim = slide.get("biological_claim", "")
+        if claim:
+            modules.append({"kind": "biological_claim", "heading": "Biological claim", "text": shorten_visible_text(claim, 150)})
+    if display_modules["experiment_type"]:
+        experiment_type = slide.get("experiment_type", "")
+        if experiment_type:
+            modules.append({"kind": "experiment_type", "heading": "Experiment type", "text": experiment_type})
+    if modules:
+        return modules
+    if slide.get("grouping_strategy"):
+        return []
+    return [make_default_finding(slide)]
+
+
+def make_default_finding(slide: dict) -> dict:
     panel_ids = slide.get("panel_ids", [])
     panel_set = set(panel_ids)
     if panel_set == {"Fig1A"}:
@@ -341,6 +413,14 @@ def make_visible_finding(slide: dict) -> dict:
     }
 
 
+def shorten_visible_text(value: str, max_length: int) -> str:
+    """Apply a fixed copy budget to text boxes in the editable PPTX."""
+    text = " ".join(str(value or "").split())
+    if len(text) <= max_length:
+        return text
+    return text[: max_length - 3].rstrip() + "..."
+
+
 def paraphrase_claim(slide: dict) -> str:
     experiment_type = slide.get("experiment_type", "result evidence")
     section = slide.get("section_title", "")
@@ -366,13 +446,16 @@ def paraphrase_claim(slide: dict) -> str:
     return f"{panels or 'The mapped evidence'} supports this experimental result."
 
 
-def make_speaker_notes(slide: dict, finding: dict, experiment_question: str) -> str:
+def make_speaker_notes(slide: dict, content_modules: list[dict], experiment_question: str) -> str:
     supporting_sentences = slide.get("supporting_sentences", [])
     figure_legend = slide.get("matched_figure_legend") or "No matched figure legend was available."
     citation_ids = ", ".join(slide.get("source_citation_ids", [])) or "none"
     evidence_id = slide.get("evidence_unit_id", "unknown")
     panels = ", ".join(slide.get("panel_ids", [])) or "none"
-    finding_text = finding.get("text") or "; ".join(finding.get("items", []))
+    finding_text = "; ".join(
+        module.get("text") or "; ".join(module.get("items", []))
+        for module in content_modules
+    ) or "the evidence shown on this slide"
     presenter_explanation = (
         f"Frame the experiment around: {experiment_question or 'the visual evidence on the slide'}. "
         f"Explain what each panel contributes, then summarize the interpretation: {finding_text}"
@@ -397,12 +480,15 @@ def make_speaker_notes(slide: dict, finding: dict, experiment_question: str) -> 
 
 def qc_warnings_for_slide(slide_model: dict, slide_object: dict) -> list[str]:
     warnings = []
+    if slide_object.get("grouping_strategy"):
+        return warnings
+    if display_modules_for_slide(slide_object)["citation_sentences"]:
+        return warnings
     visible_texts = [slide_model.get("experiment_question", "")]
-    finding = slide_model["finding"]
-    if finding["kind"] == "key_findings":
-        visible_texts.extend(finding["items"])
-    else:
-        visible_texts.append(finding["text"])
+    for module in slide_model.get("content_modules", []):
+        visible_texts.extend(module.get("items", []))
+        if module.get("text"):
+            visible_texts.append(module["text"])
 
     supporting_sentences = [clean_sentence(s) for s in slide_object.get("supporting_sentences", [])]
     visible_compact = [clean_sentence(text) for text in visible_texts if text]
@@ -414,9 +500,9 @@ def qc_warnings_for_slide(slide_model: dict, slide_object: dict) -> list[str]:
             elif len(text) > 30 and len(sentence) > 30 and text in sentence:
                 warnings.append("visible slide text appears copied from supporting sentence")
 
-    raw_subtitle = clean_sentence(slide_object.get("slide_subtitle", ""))
-    if raw_subtitle and any(raw_subtitle == text for text in visible_compact):
-        warnings.append("subtitle is copied from supporting sentence")
+    raw_purpose = clean_sentence(slide_object.get("experiment_purpose") or slide_object.get("slide_subtitle", ""))
+    if raw_purpose and any(raw_purpose == text for text in visible_compact):
+        warnings.append("experiment purpose is copied from supporting sentence")
 
     if has_duplicate_visible_information(visible_compact):
         warnings.append("duplicate information appears in multiple visible locations")
@@ -491,7 +577,7 @@ def render_pptx_with_artifact_tool(
     presentation_json_path: Path,
     pptx_path: Path,
 ) -> None:
-    skill_dir = Path(os.environ.get("PDF2JC_PRESENTATION_SKILL_DIR", SKILL_DIR))
+    skill_dir = resolve_presentation_skill_dir()
     if not skill_dir.exists():
         raise FileNotFoundError(
             "Could not find the bundled presentation renderer. Set "
@@ -522,6 +608,24 @@ def render_pptx_with_artifact_tool(
             check=True,
             cwd=tmp_dir,
         )
+
+
+def resolve_presentation_skill_dir() -> Path:
+    configured = os.environ.get("PDF2JC_PRESENTATION_SKILL_DIR")
+    if configured:
+        return Path(configured)
+    if SKILL_DIR.exists():
+        return SKILL_DIR
+    if PRESENTATION_SKILL_ROOT.exists():
+        candidates = sorted(
+            PRESENTATION_SKILL_ROOT.glob("*/skills/presentations"),
+            key=lambda path: path.parts,
+            reverse=True,
+        )
+        for candidate in candidates:
+            if (candidate / "container_tools" / "setup_artifact_tool_workspace.mjs").exists():
+                return candidate
+    return SKILL_DIR
 
 
 RENDERER_JS = r'''
@@ -587,38 +691,58 @@ async function addResultSlide(slide, slideModel, model) {
     pt: 28, bold: true, color: theme.title_color,
   });
   if (slideModel.experiment_question) {
-    addText(slide, slideModel.experiment_question, page.left, page.top + 43, page.width, 26, {
+    addText(slide, slideModel.experiment_question, page.left, page.top + 43, page.width, 28, {
       pt: 18, bold: false, color: theme.secondary,
     });
   }
-  addRule(slide, page.left, page.top + 78, page.width, theme.divider);
+  addRule(slide, page.left, page.top + 82, page.width, theme.divider);
 
-  const panelArea = { left: page.left, top: 116, width: page.width, height: 420 };
+  // Panel images are mandatory evidence on a PDF2JC result slide.
+  // Reserve a shared lower zone for whichever explanatory modules the reviewer enabled.
+  // The modules themselves split this zone vertically, so none of them replaces another.
+  const panelArea = { left: page.left, top: 120, width: page.width, height: 370 };
   await addPanels(slide, slideModel, panelArea, theme);
 
-  addFinding(slide, slideModel.finding, page.left, 558, page.width, 68, theme);
+  addContentModules(slide, slideModel.content_modules || [], page.left, 505, page.width, 126, theme);
   addRule(slide, page.left, 642, page.width, theme.divider);
 
-  const footer = `${slideModel.footer_title} | Science | 2026`;
-  addText(slide, footer, page.left, 660, 900, 18, { pt: 10, color: theme.secondary_text });
-  addText(slide, String(slideModel.presentation_slide_number), 1160, 660, 40, 18, {
-    pt: 10, color: theme.secondary_text,
-  });
+  if (slideModel.display_modules?.footer !== false) {
+    const footer = slideModel.footer_title ? `${slideModel.footer_title} | Science | 2026` : "";
+    addText(slide, footer, page.left, 660, 900, 18, { pt: 10, color: theme.secondary_text });
+    addText(slide, String(slideModel.presentation_slide_number), 1160, 660, 40, 18, {
+      pt: 10, color: theme.secondary_text,
+    });
+  }
 
-  slide.speakerNotes.textFrame.setText(slideModel.speaker_notes);
-  slide.speakerNotes.setVisible(true);
+  if (slideModel.speaker_notes) {
+    slide.speakerNotes.textFrame.setText(slideModel.speaker_notes);
+    slide.speakerNotes.setVisible(true);
+  }
 }
 
-function addFinding(slide, finding, x, y, w, h, theme) {
-  if (!finding) return;
+function addContentModules(slide, modules, x, y, w, h, theme) {
+  if (!modules.length) return;
+  const weights = modules.map((module) => module.kind === "key_findings" ? 2 : module.kind === "biological_claim" ? 1.65 : 0.85);
+  const totalWeight = weights.reduce((sum, weight) => sum + weight, 0);
+  let cursor = y;
+  modules.forEach((module, index) => {
+    const isLast = index === modules.length - 1;
+    const moduleHeight = isLast ? y + h - cursor : Math.max(25, Math.round(h * weights[index] / totalWeight));
+    addContentModule(slide, module, x, cursor, w, moduleHeight, theme);
+    cursor += moduleHeight;
+  });
+}
+
+function addContentModule(slide, finding, x, y, w, h, theme) {
+  if (!finding || h < 18) return;
   if (finding.kind === "key_findings") {
     const heading = slide.shapes.add({
       geometry: "textbox",
-      position: { left: x, top: y, width: 160, height: 18 },
+      position: { left: x, top: y, width: 240, height: 18 },
       fill: "none",
       line: { style: "solid", fill: "none", width: 0 },
     });
-    heading.text = "Key findings";
+    heading.text = finding.heading || "Key findings";
     heading.text.style = {
       typeface: "Arial",
       fontSize: pt(14),
@@ -626,7 +750,7 @@ function addFinding(slide, finding, x, y, w, h, theme) {
       color: theme.secondary,
       insets: { top: 0, right: 0, bottom: 0, left: 0 },
     };
-    const paragraphs = (finding.items || []).slice(0, 3).map((bullet) => ({
+    const paragraphs = (finding.items || []).slice(0, 2).map((bullet) => ({
     bulletCharacter: "•",
     marginLeft: 18,
     indent: -10,
@@ -634,7 +758,7 @@ function addFinding(slide, finding, x, y, w, h, theme) {
   }));
     const box = slide.shapes.add({
     geometry: "textbox",
-      position: { left: x, top: y + 20, width: w, height: h - 20 },
+      position: { left: x, top: y + 22, width: w, height: Math.max(12, h - 22) },
     fill: "none",
     line: { style: "solid", fill: "none", width: 0 },
   });
@@ -650,8 +774,14 @@ function addFinding(slide, finding, x, y, w, h, theme) {
   };
     return;
   }
-  addText(slide, finding.text || "", x, y + 8, w, h - 8, {
-    pt: 18, color: theme.text_color, bold: false,
+  const hasHeading = Boolean(finding.heading);
+  if (hasHeading) {
+    addText(slide, finding.heading, x, y, w, 16, {
+      pt: 12, color: theme.secondary, bold: true,
+    });
+  }
+  addText(slide, finding.text || "", x, y + (hasHeading ? 17 : 4), w, Math.max(12, h - (hasHeading ? 17 : 4)), {
+    pt: finding.kind === "experiment_type" ? 14 : 16, color: theme.text_color, bold: false,
   });
 }
 
@@ -669,9 +799,11 @@ async function addPanels(slide, slideModel, area, theme) {
   const slots = computeSlots(panelIds.length, layout, area);
   for (let i = 0; i < panelIds.length; i++) {
     const slot = slots[i];
-    addText(slide, panelIds[i], slot.left, slot.top - 22, slot.width, 18, {
-      pt: 11, bold: true, color: theme.accent,
-    });
+    if (slideModel.display_modules?.panel_labels !== false) {
+      addText(slide, panelIds[i], slot.left, slot.top - 22, slot.width, 18, {
+        pt: 11, bold: true, color: theme.accent,
+      });
+    }
     const imagePath = imagePaths[i];
     if (imagePath) {
       const imageBytes = await fs.readFile(imagePath);
@@ -712,9 +844,9 @@ function computeSlots(count, layout, area) {
     }
     slots.push({
       left: area.left + col * (slotW + gap),
-      top: area.top + row * (slotH + gap) + 22,
+      top: area.top + row * (slotH + gap) + 20,
       width: slotW,
-      height: slotH - 28,
+      height: slotH - 26,
     });
   }
   return slots;
